@@ -2948,6 +2948,14 @@ async fn build_memory_context(
     context
 }
 
+pub(crate) async fn recall_memory_context(
+    mem: &dyn Memory,
+    user_msg: &str,
+    min_relevance_score: f64,
+) -> String {
+    build_memory_context(mem, user_msg, min_relevance_score).await
+}
+
 /// Extract a compact summary of tool interactions from history messages added
 /// during `run_tool_call_loop`. Scans assistant messages for `<tool_call>` tags
 /// or native tool-call JSON to collect tool names used.

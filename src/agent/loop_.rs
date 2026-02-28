@@ -3602,6 +3602,10 @@ pub async fn process_message_with_session(
     Ok(response)
 }
 
+pub(crate) fn trim_history_for_gateway(history: &mut Vec<ChatMessage>, max_history: usize) {
+    trim_history(history, max_history);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

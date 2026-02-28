@@ -7,6 +7,7 @@
 //! - Request timeouts (30s) to prevent slow-loris attacks
 //! - Header sanitization (handled by axum/hyper)
 
+pub mod agent_sse;
 pub mod api;
 mod openai_compat;
 mod openclaw_compat;
@@ -868,6 +869,14 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/api/node-control", post(handle_node_control))
         // ── SSE event stream ──
         .route("/api/events", get(sse::handle_sse_events))
+        .route(
+            "/agent",
+            post(agent_sse::handle_agent_sse).with_state(state.clone()),
+        )
+        .route(
+            "/agent/clear",
+            post(agent_sse::handle_agent_clear).with_state(state.clone()),
+        )
         // ── WebSocket agent chat ──
         .route("/ws/chat", get(ws::handle_ws_chat))
         // ── Static assets (web dashboard) ──
