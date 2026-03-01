@@ -374,6 +374,54 @@ pub struct AppState {
     pub cost_tracker: Option<Arc<CostTracker>>,
     /// SSE broadcast channel for real-time events
     pub event_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Web channel instance (WebSocket-based browser channel)
+    pub web_channel: Option<Arc<crate::channels::WebChannel>>,
+}
+
+async fn handle_ws_channel(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
+    ws_upgrade: axum::extract::WebSocketUpgrade,
+) -> impl axum::response::IntoResponse {
+    // Auth — same pattern as ws.rs
+    if state.pairing.require_pairing() {
+        let token = ws::extract_ws_bearer_token(&headers).unwrap_or_default();
+        if !state.pairing.is_authenticated(&token) {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+            )
+                .into_response();
+        }
+    }
+
+    let web_channel = match crate::channels::web::get_web_channel() {
+        Some(ch) => ch,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "Web channel not enabled",
+            )
+                .into_response();
+        }
+    };
+
+    let message_tx = match crate::channels::web::get_web_channel_tx() {
+        Some(tx) => tx,
+        None => {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "Web channel not ready (channels not started yet)",
+            )
+                .into_response();
+        }
+    };
+
+    ws_upgrade
+        .on_upgrade(move |socket| {
+            crate::channels::web::handle_ws_connection(socket, web_channel, message_tx)
+        })
+        .into_response()
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -798,6 +846,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         max_tool_iterations,
         cost_tracker,
         event_tx,
+        web_channel: crate::channels::web::get_web_channel(),
     };
 
     // Config PUT needs larger body limit (1MB)
@@ -879,6 +928,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         )
         // ── WebSocket agent chat ──
         .route("/ws/chat", get(ws::handle_ws_chat))
+        .route("/ws/channel", get(handle_ws_channel))
         // ── Static assets (web dashboard) ──
         .route("/_app/{*path}", get(static_files::handle_static))
         // ── Config PUT with larger body limit ──

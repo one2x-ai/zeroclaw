@@ -541,6 +541,7 @@ impl std::fmt::Debug for Config {
             self.channels_config.acp.is_some(),
             self.channels_config.nostr.is_some(),
             self.channels_config.clawdtalk.is_some(),
+            self.channels_config.web.is_some(),
         ]
         .into_iter()
         .filter(|enabled| *enabled)
@@ -4404,6 +4405,13 @@ impl<T: ChannelConfig> crate::config::traits::ConfigHandle for ConfigWrapper<T> 
     }
 }
 
+/// Web channel configuration for browser-based WebSocket connections.
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
+pub struct WebChannelConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 /// Top-level channel configurations (`[channels_config]` section).
 ///
 /// Each channel sub-section (e.g. `telegram`, `discord`) is optional;
@@ -4467,6 +4475,9 @@ pub struct ChannelsConfig {
     /// without hardcoding behavior in channel implementations.
     #[serde(default)]
     pub ack_reaction: AckReactionChannelsConfig,
+    /// Web channel configuration (WebSocket-based browser channel).
+    #[serde(default)]
+    pub web: Option<WebChannelConfig>,
     /// Base timeout in seconds for processing a single channel message (LLM + tools).
     /// Runtime uses this as a per-turn budget that scales with tool-loop depth
     /// (up to 4x, capped) so one slow/retried model call does not consume the
@@ -4575,6 +4586,10 @@ impl ChannelsConfig {
                 Box::new(ConfigWrapper::new(self.clawdtalk.as_ref())),
                 self.clawdtalk.is_some(),
             ),
+            (
+                Box::new(ConfigWrapper::new(self.web.as_ref())),
+                self.web.as_ref().is_some_and(|w| w.enabled),
+            ),
         ]
     }
 
@@ -4621,6 +4636,7 @@ impl Default for ChannelsConfig {
             nostr: None,
             clawdtalk: None,
             ack_reaction: AckReactionChannelsConfig::default(),
+            web: None,
             message_timeout_secs: default_channel_message_timeout_secs(),
         }
     }
@@ -6443,6 +6459,15 @@ impl ChannelConfig for NostrConfig {
     }
     fn desc() -> &'static str {
         "Nostr DMs"
+    }
+}
+
+impl ChannelConfig for WebChannelConfig {
+    fn name() -> &'static str {
+        "Web"
+    }
+    fn desc() -> &'static str {
+        "Web Channel"
     }
 }
 

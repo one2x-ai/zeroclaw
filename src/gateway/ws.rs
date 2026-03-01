@@ -548,7 +548,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session_id: Strin
     }
 }
 
-fn extract_ws_bearer_token(headers: &HeaderMap, query_token: Option<&str>) -> Option<String> {
+pub(crate) fn extract_ws_bearer_token(headers: &HeaderMap, query_token: Option<&str>) -> Option<String> {
     if let Some(auth_header) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())

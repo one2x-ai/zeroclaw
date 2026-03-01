@@ -46,6 +46,7 @@ pub mod whatsapp;
 pub mod whatsapp_storage;
 #[cfg(feature = "whatsapp-web")]
 pub mod whatsapp_web;
+pub mod web;
 
 pub use acp::AcpChannel;
 pub use bluebubbles::BlueBubblesChannel;
@@ -75,6 +76,7 @@ pub use wati::WatiChannel;
 pub use whatsapp::WhatsAppChannel;
 #[cfg(feature = "whatsapp-web")]
 pub use whatsapp_web::WhatsAppWebChannel;
+pub use web::WebChannel;
 
 use crate::agent::loop_::{
     build_shell_policy_instructions, build_tool_instructions_from_specs,
@@ -2781,6 +2783,8 @@ async fn handle_runtime_command_if_needed(
                 }
             }
         }
+        ChannelRuntimeCommand::ApprovePendingRequest(_)
+        | ChannelRuntimeCommand::DenyToolApproval(_) => String::new(),
         ChannelRuntimeCommand::ListApprovals => {
             match describe_non_cli_approvals(ctx, sender, source_channel, reply_target).await {
                 Ok(summary) => summary,
@@ -5292,6 +5296,16 @@ fn collect_configured_channels(
             channel: Arc::new(AcpChannel::new(acp.clone())),
         });
     }
+
+    if let Some(ref web_cfg) = config.channels_config.web {
+        if web_cfg.enabled {
+            let web_ch = web::get_or_init_web_channel();
+            channels.push(ConfiguredChannel {
+                display_name: "Web",
+                channel: web_ch,
+            });
+        }
+    }
     channels
 }
 
@@ -5720,6 +5734,12 @@ pub async fn start_channels(config: Config) -> Result<()> {
             max_backoff_secs,
         ));
     }
+
+    // Share the message tx with the web channel gateway handler
+    if config.channels_config.web.as_ref().is_some_and(|w| w.enabled) {
+        web::set_web_channel_tx(tx.clone());
+    }
+
     drop(tx); // Drop our copy so rx closes when all channels stop
 
     let channels_by_name = Arc::new(
