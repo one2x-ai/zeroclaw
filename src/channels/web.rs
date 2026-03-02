@@ -246,7 +246,7 @@ pub async fn handle_ws_connection(
                                     .as_secs();
                                 let _ = message_tx.send(ChannelMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
-                                    sender: "web".to_string(),
+                                    sender: format!("web:{}", uuid::Uuid::new_v4()),
                                     reply_target: "web".to_string(),
                                     content,
                                     channel: "Web".to_string(),
@@ -261,7 +261,7 @@ pub async fn handle_ws_connection(
                                     .as_secs();
                                 let _ = message_tx.send(ChannelMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
-                                    sender: "web".to_string(),
+                                    sender: format!("web:{}", uuid::Uuid::new_v4()),
                                     reply_target: "web".to_string(),
                                     content,
                                     channel: "Web".to_string(),

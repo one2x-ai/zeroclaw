@@ -529,6 +529,13 @@ pub(crate) async fn deliver_announcement(
                 anyhow::bail!("matrix delivery channel requires `channel-matrix` feature");
             }
         }
+        "web" => {
+            if let Some(web_ch) = crate::channels::web::get_web_channel() {
+                web_ch.send(&SendMessage::new(output, target)).await?;
+            } else {
+                anyhow::bail!("web channel not enabled or no active connections");
+            }
+        }
         other => anyhow::bail!("unsupported delivery channel: {other}"),
     }
 
