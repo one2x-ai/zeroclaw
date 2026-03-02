@@ -336,6 +336,12 @@ tokio::task_local! {
     static TOOL_LOOP_CANARY_TOKENS_ENABLED: bool;
 }
 
+/// Get the current channel reply_target (session ID) from the task-local context.
+/// Used by shell tool to inject ZEROCLAW_SESSION_ID env var.
+pub(crate) fn get_current_reply_target() -> Option<String> {
+    TOOL_LOOP_REPLY_TARGET.try_with(Clone::clone).ok().flatten()
+}
+
 const AUTO_CRON_DELIVERY_CHANNELS: &[&str] = &[
     "telegram",
     "discord",
@@ -343,6 +349,7 @@ const AUTO_CRON_DELIVERY_CHANNELS: &[&str] = &[
     "mattermost",
     "lark",
     "feishu",
+    "Web",
 ];
 
 const NON_CLI_APPROVAL_WAIT_TIMEOUT_SECS: u64 = 300;

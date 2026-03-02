@@ -232,6 +232,11 @@ impl Tool for ShellTool {
             }
         }
 
+        // Inject channel session context (reply_target) for artifact upload
+        if let Some(session_id) = crate::agent::loop_::get_current_reply_target() {
+            cmd.env("ZEROCLAW_SESSION_ID", &session_id);
+        }
+
         let result =
             tokio::time::timeout(Duration::from_secs(SHELL_TIMEOUT_SECS), cmd.output()).await;
 
