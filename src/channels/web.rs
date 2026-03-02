@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::traits::{Channel, ChannelMessage, SendMessage};
@@ -7,14 +8,15 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, RwLock};
 
 /// Global WebChannel instance shared between gateway and channel system.
 /// Initialized once when web channel is enabled in config.
 static WEB_CHANNEL_INSTANCE: OnceLock<Arc<WebChannel>> = OnceLock::new();
 
 /// Channel message sender, set by `start_channels` when the web channel is active.
-static WEB_CHANNEL_TX: OnceLock<tokio::sync::mpsc::Sender<super::traits::ChannelMessage>> = OnceLock::new();
+static WEB_CHANNEL_TX: OnceLock<tokio::sync::mpsc::Sender<super::traits::ChannelMessage>> =
+    OnceLock::new();
 
 /// Get or create the global WebChannel instance.
 pub fn get_or_init_web_channel() -> Arc<WebChannel> {
@@ -35,6 +37,7 @@ pub fn set_web_channel_tx(tx: tokio::sync::mpsc::Sender<super::traits::ChannelMe
 pub fn get_web_channel_tx() -> Option<tokio::sync::mpsc::Sender<super::traits::ChannelMessage>> {
     WEB_CHANNEL_TX.get().cloned()
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON message types for WebSocket protocol
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42,6 +45,14 @@ pub fn get_web_channel_tx() -> Option<tokio::sync::mpsc::Sender<super::traits::C
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
+    /// Session init — must be the first message after WS connect.
+    /// If session_id is provided, resumes that session (conversation history restored).
+    /// If omitted, a new session is created and the server returns the generated session_id.
+    #[serde(rename = "init")]
+    Init {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
     #[serde(rename = "message")]
     Message {
         content: String,
@@ -57,6 +68,9 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum ServerMessage {
+    /// Returned after Init — contains the session_id for this connection.
+    #[serde(rename = "session")]
+    Session { session_id: String },
     #[serde(rename = "typing")]
     Typing { active: bool },
     #[serde(rename = "draft")]
@@ -88,30 +102,36 @@ pub enum ServerMessage {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct WebChannel {
-    broadcast_tx: broadcast::Sender<String>,
+    /// Per-session broadcast channels. Key = session_id.
+    /// Multiple WS connections with the same session_id share one broadcast.
+    sessions: Arc<RwLock<HashMap<String, broadcast::Sender<String>>>>,
     connection_count: Arc<AtomicUsize>,
 }
 
 impl WebChannel {
     pub fn new() -> Self {
-        let (broadcast_tx, _) = broadcast::channel(256);
         Self {
-            broadcast_tx,
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             connection_count: Arc::new(AtomicUsize::new(0)),
         }
-    }
-
-    pub fn broadcast_tx(&self) -> &broadcast::Sender<String> {
-        &self.broadcast_tx
     }
 
     pub fn connection_count(&self) -> usize {
         self.connection_count.load(Ordering::Relaxed)
     }
 
-    fn broadcast(&self, msg: &ServerMessage) {
+    /// Send a message to a specific session, or broadcast to all if session not found.
+    async fn send_to_session(&self, session_id: &str, msg: &ServerMessage) {
         if let Ok(json) = serde_json::to_string(msg) {
-            let _ = self.broadcast_tx.send(json);
+            let sessions = self.sessions.read().await;
+            if let Some(tx) = sessions.get(session_id) {
+                let _ = tx.send(json);
+            } else {
+                // Fallback: broadcast to all sessions (e.g., cron delivery with to="web")
+                for tx in sessions.values() {
+                    let _ = tx.send(json.clone());
+                }
+            }
         }
     }
 }
@@ -123,10 +143,14 @@ impl Channel for WebChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        self.broadcast(&ServerMessage::Message {
-            content: message.content.clone(),
-            message_id: uuid::Uuid::new_v4().to_string(),
-        });
+        self.send_to_session(
+            &message.recipient,
+            &ServerMessage::Message {
+                content: message.content.clone(),
+                message_id: uuid::Uuid::new_v4().to_string(),
+            },
+        )
+        .await;
         Ok(())
     }
 
@@ -141,13 +165,15 @@ impl Channel for WebChannel {
         true
     }
 
-    async fn start_typing(&self, _recipient: &str) -> anyhow::Result<()> {
-        self.broadcast(&ServerMessage::Typing { active: true });
+    async fn start_typing(&self, recipient: &str) -> anyhow::Result<()> {
+        self.send_to_session(recipient, &ServerMessage::Typing { active: true })
+            .await;
         Ok(())
     }
 
-    async fn stop_typing(&self, _recipient: &str) -> anyhow::Result<()> {
-        self.broadcast(&ServerMessage::Typing { active: false });
+    async fn stop_typing(&self, recipient: &str) -> anyhow::Result<()> {
+        self.send_to_session(recipient, &ServerMessage::Typing { active: false })
+            .await;
         Ok(())
     }
 
@@ -157,36 +183,48 @@ impl Channel for WebChannel {
 
     async fn send_draft(&self, message: &SendMessage) -> anyhow::Result<Option<String>> {
         let message_id = uuid::Uuid::new_v4().to_string();
-        self.broadcast(&ServerMessage::Draft {
-            content: message.content.clone(),
-            message_id: message_id.clone(),
-        });
+        self.send_to_session(
+            &message.recipient,
+            &ServerMessage::Draft {
+                content: message.content.clone(),
+                message_id: message_id.clone(),
+            },
+        )
+        .await;
         Ok(Some(message_id))
     }
 
     async fn update_draft(
         &self,
-        _recipient: &str,
+        recipient: &str,
         message_id: &str,
         text: &str,
     ) -> anyhow::Result<Option<String>> {
-        self.broadcast(&ServerMessage::DraftUpdate {
-            content: text.to_string(),
-            message_id: message_id.to_string(),
-        });
+        self.send_to_session(
+            recipient,
+            &ServerMessage::DraftUpdate {
+                content: text.to_string(),
+                message_id: message_id.to_string(),
+            },
+        )
+        .await;
         Ok(None)
     }
 
     async fn finalize_draft(
         &self,
-        _recipient: &str,
+        recipient: &str,
         message_id: &str,
         text: &str,
     ) -> anyhow::Result<()> {
-        self.broadcast(&ServerMessage::Message {
-            content: text.to_string(),
-            message_id: message_id.to_string(),
-        });
+        self.send_to_session(
+            recipient,
+            &ServerMessage::Message {
+                content: text.to_string(),
+                message_id: message_id.to_string(),
+            },
+        )
+        .await;
         Ok(())
     }
 
@@ -196,10 +234,17 @@ impl Channel for WebChannel {
         _message_id: &str,
         emoji: &str,
     ) -> anyhow::Result<()> {
-        self.broadcast(&ServerMessage::Reaction {
+        // Reactions are broadcast to all sessions (no recipient context in trait signature)
+        let msg = ServerMessage::Reaction {
             emoji: emoji.to_string(),
             action: "add".to_string(),
-        });
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let sessions = self.sessions.read().await;
+            for tx in sessions.values() {
+                let _ = tx.send(json.clone());
+            }
+        }
         Ok(())
     }
 
@@ -209,10 +254,16 @@ impl Channel for WebChannel {
         _message_id: &str,
         emoji: &str,
     ) -> anyhow::Result<()> {
-        self.broadcast(&ServerMessage::Reaction {
+        let msg = ServerMessage::Reaction {
             emoji: emoji.to_string(),
             action: "remove".to_string(),
-        });
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let sessions = self.sessions.read().await;
+            for tx in sessions.values() {
+                let _ = tx.send(json.clone());
+            }
+        }
         Ok(())
     }
 }
@@ -227,9 +278,67 @@ pub async fn handle_ws_connection(
     message_tx: tokio::sync::mpsc::Sender<ChannelMessage>,
 ) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let mut broadcast_rx = channel.broadcast_tx.subscribe();
     channel.connection_count.fetch_add(1, Ordering::Relaxed);
 
+    // ── Phase 1: Wait for Init message ──────────────────────────────────
+    let session_id = loop {
+        match ws_receiver.next().await {
+            Some(Ok(Message::Text(text))) => {
+                match serde_json::from_str::<ClientMessage>(&text) {
+                    Ok(ClientMessage::Init { session_id }) => {
+                        let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                        break sid;
+                    }
+                    Ok(_) => {
+                        // Not an init message — tell client to init first
+                        let err = serde_json::to_string(&ServerMessage::Error {
+                            content: "First message must be {\"type\":\"init\"} or {\"type\":\"init\",\"session_id\":\"...\"}".to_string(),
+                        })
+                        .unwrap_or_default();
+                        let _ = ws_sender.send(Message::Text(err.into())).await;
+                    }
+                    Err(_) => {
+                        let err = serde_json::to_string(&ServerMessage::Error {
+                            content: "Invalid JSON".to_string(),
+                        })
+                        .unwrap_or_default();
+                        let _ = ws_sender.send(Message::Text(err.into())).await;
+                    }
+                }
+            }
+            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                channel.connection_count.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
+            _ => continue,
+        }
+    };
+
+    // ── Phase 2: Register session and subscribe ─────────────────────────
+    let broadcast_rx = {
+        let mut sessions = channel.sessions.write().await;
+        let tx = sessions
+            .entry(session_id.clone())
+            .or_insert_with(|| broadcast::channel(256).0);
+        tx.subscribe()
+    };
+    let mut broadcast_rx = broadcast_rx;
+
+    // Send session_id back to client
+    let session_msg = serde_json::to_string(&ServerMessage::Session {
+        session_id: session_id.clone(),
+    })
+    .unwrap_or_default();
+    if ws_sender
+        .send(Message::Text(session_msg.into()))
+        .await
+        .is_err()
+    {
+        channel.connection_count.fetch_sub(1, Ordering::Relaxed);
+        return;
+    }
+
+    // ── Phase 3: Message loop ───────────────────────────────────────────
     loop {
         tokio::select! {
             msg = ws_receiver.next() => {
@@ -246,8 +355,8 @@ pub async fn handle_ws_connection(
                                     .as_secs();
                                 let _ = message_tx.send(ChannelMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
-                                    sender: format!("web:{}", uuid::Uuid::new_v4()),
-                                    reply_target: "web".to_string(),
+                                    sender: session_id.clone(),
+                                    reply_target: session_id.clone(),
                                     content,
                                     channel: "Web".to_string(),
                                     timestamp: ts,
@@ -261,8 +370,8 @@ pub async fn handle_ws_connection(
                                     .as_secs();
                                 let _ = message_tx.send(ChannelMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
-                                    sender: format!("web:{}", uuid::Uuid::new_v4()),
-                                    reply_target: "web".to_string(),
+                                    sender: session_id.clone(),
+                                    reply_target: session_id.clone(),
                                     content,
                                     channel: "Web".to_string(),
                                     timestamp: ts,
@@ -273,6 +382,9 @@ pub async fn handle_ws_connection(
                                 let pong = serde_json::to_string(&ServerMessage::Pong)
                                     .unwrap_or_default();
                                 let _ = ws_sender.send(Message::Text(pong.into())).await;
+                            }
+                            Ok(ClientMessage::Init { .. }) => {
+                                // Already initialized — ignore duplicate init
                             }
                             Err(_) => {
                                 let err = serde_json::to_string(&ServerMessage::Error {
@@ -296,5 +408,15 @@ pub async fn handle_ws_connection(
         }
     }
 
+    // ── Cleanup ─────────────────────────────────────────────────────────
     channel.connection_count.fetch_sub(1, Ordering::Relaxed);
+
+    // Remove session if no more subscribers
+    let sessions = channel.sessions.read().await;
+    if let Some(tx) = sessions.get(&session_id) {
+        if tx.receiver_count() == 0 {
+            drop(sessions);
+            channel.sessions.write().await.remove(&session_id);
+        }
+    }
 }
