@@ -385,7 +385,7 @@ async fn handle_ws_channel(
 ) -> impl axum::response::IntoResponse {
     // Auth — same pattern as ws.rs
     if state.pairing.require_pairing() {
-        let token = ws::extract_ws_bearer_token(&headers).unwrap_or_default();
+        let token = ws::extract_ws_bearer_token(&headers, None).unwrap_or_default();
         if !state.pairing.is_authenticated(&token) {
             return (
                 axum::http::StatusCode::UNAUTHORIZED,

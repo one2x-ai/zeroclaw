@@ -2957,7 +2957,7 @@ pub(crate) async fn recall_memory_context(
     user_msg: &str,
     min_relevance_score: f64,
 ) -> String {
-    build_memory_context(mem, user_msg, min_relevance_score).await
+    build_memory_context(mem, user_msg, min_relevance_score, None).await
 }
 
 /// Extract a compact summary of tool interactions from history messages added

@@ -376,11 +376,19 @@ pub async fn handle_agent_sse(
 
         let (response, error) = match result {
             Ok(text) => {
-                let safe = crate::channels::sanitize_channel_response(
+                let leak_guard = state_for_task.config.lock().security.outbound_leak_guard.clone();
+                match crate::channels::sanitize_channel_response(
                     &text,
                     state_for_task.tools_registry_exec.as_ref(),
-                );
-                (safe, None)
+                    &leak_guard,
+                ) {
+                    crate::channels::ChannelSanitizationResult::Sanitized(safe) => {
+                        (safe, None)
+                    }
+                    crate::channels::ChannelSanitizationResult::Blocked { .. } => {
+                        ("I blocked a draft response because it appeared to contain credential material. Please ask for a redacted summary.".to_string(), None)
+                    }
+                }
             }
             Err(e) => {
                 let sanitized = crate::providers::sanitize_api_error(&e.to_string());
