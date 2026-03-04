@@ -50,6 +50,8 @@ fn require_auth(
 pub struct MemoryQuery {
     pub query: Option<String>,
     pub category: Option<String>,
+    pub prefix: Option<String>,
+    pub keys_only: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -392,6 +394,27 @@ pub async fn handle_api_memory_list(
             )
                 .into_response(),
         }
+    } else if let Some(ref prefix) = params.prefix {
+        match state.mem.list_by_prefix(prefix, 1000).await {
+            Ok(entries) => {
+                let entries_json = if params.keys_only.unwrap_or(false) {
+                    entries.iter().map(|e| serde_json::json!({
+                        "key": e.key,
+                        "category": e.category,
+                        "timestamp": e.timestamp,
+                        "session_id": e.session_id,
+                    })).collect::<Vec<_>>()
+                } else {
+                    entries.iter().map(|e| serde_json::to_value(e).unwrap_or_default()).collect()
+                };
+                Json(serde_json::json!({"entries": entries_json})).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Memory prefix list failed: {e}")})),
+            )
+                .into_response(),
+        }
     } else {
         // List mode
         let category = params.category.as_deref().map(|cat| match cat {
@@ -402,7 +425,19 @@ pub async fn handle_api_memory_list(
         });
 
         match state.mem.list(category.as_ref(), None).await {
-            Ok(entries) => Json(serde_json::json!({"entries": entries})).into_response(),
+            Ok(entries) => {
+                let entries_json = if params.keys_only.unwrap_or(false) {
+                    entries.iter().map(|e| serde_json::json!({
+                        "key": e.key,
+                        "category": e.category,
+                        "timestamp": e.timestamp,
+                        "session_id": e.session_id,
+                    })).collect::<Vec<_>>()
+                } else {
+                    entries.iter().map(|e| serde_json::to_value(e).unwrap_or_default()).collect()
+                };
+                Json(serde_json::json!({"entries": entries_json})).into_response()
+            }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": format!("Memory list failed: {e}")})),
@@ -411,6 +446,30 @@ pub async fn handle_api_memory_list(
         }
     }
 }
+
+/// GET /api/memory/:key — get a single memory entry by exact key
+pub async fn handle_api_memory_get_by_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match state.mem.get(&key).await {
+        Ok(Some(entry)) => Json(serde_json::json!({"entry": entry})).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Memory entry not found"})),
+        ).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Memory get failed: {e}")})),
+        ).into_response(),
+    }
+}
+
 
 /// POST /api/memory — store a memory entry
 pub async fn handle_api_memory_store(

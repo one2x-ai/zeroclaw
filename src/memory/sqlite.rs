@@ -781,6 +781,41 @@ impl Memory for SqliteMemory {
         .await?
     }
 
+    async fn list_by_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<MemoryEntry>> {
+        let conn = self.conn.clone();
+        let prefix = format!("{}%", prefix);
+        let limit = limit as i64;
+
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<MemoryEntry>> {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT id, key, content, category, created_at, session_id FROM memories
+                 WHERE key LIKE ?1 ORDER BY created_at DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![prefix, limit], |row| {
+                Ok(MemoryEntry {
+                    id: row.get(0)?,
+                    key: row.get(1)?,
+                    content: row.get(2)?,
+                    category: Self::str_to_category(&row.get::<_, String>(3)?),
+                    timestamp: row.get(4)?,
+                    session_id: row.get(5)?,
+                    score: None,
+                })
+            })?;
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+            Ok(results)
+        })
+        .await?
+    }
+
     async fn forget(&self, key: &str) -> anyhow::Result<bool> {
         let conn = self.conn.clone();
         let key = key.to_string();

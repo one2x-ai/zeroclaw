@@ -93,6 +93,20 @@ pub trait Memory: Send + Sync {
     /// Health check
     async fn health_check(&self) -> bool;
 
+    /// List memory entries whose key starts with the given prefix.
+    async fn list_by_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<MemoryEntry>> {
+        // Default: filter list() results by prefix (backends can override for efficiency)
+        let all = self.list(None, None).await?;
+        Ok(all
+            .into_iter()
+            .filter(|e| e.key.starts_with(prefix))
+            .take(limit)
+            .collect())
+    }
     /// Rebuild embeddings for all memories using the current embedding provider.
     /// Returns the number of memories reindexed, or an error if not supported.
     ///

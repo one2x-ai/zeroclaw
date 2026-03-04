@@ -906,7 +906,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         )
         .route("/api/memory", get(api::handle_api_memory_list))
         .route("/api/memory", post(api::handle_api_memory_store))
-        .route("/api/memory/{key}", delete(api::handle_api_memory_delete))
+        .route("/api/memory/{key}", get(api::handle_api_memory_get_by_key).delete(api::handle_api_memory_delete))
         .route("/api/pairing/devices", get(api::handle_api_pairing_devices))
         .route(
             "/api/pairing/devices/{id}",
