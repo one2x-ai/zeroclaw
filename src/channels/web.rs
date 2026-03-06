@@ -120,18 +120,15 @@ impl WebChannel {
         self.connection_count.load(Ordering::Relaxed)
     }
 
-    /// Send a message to a specific session, or broadcast to all if session not found.
+    /// Send a message to a specific session, dropping if not connected.
     async fn send_to_session(&self, session_id: &str, msg: &ServerMessage) {
         if let Ok(json) = serde_json::to_string(msg) {
             let sessions = self.sessions.read().await;
             if let Some(tx) = sessions.get(session_id) {
                 let _ = tx.send(json);
-            } else {
-                // Fallback: broadcast to all sessions (e.g., cron delivery with to="web")
-                for tx in sessions.values() {
-                    let _ = tx.send(json.clone());
-                }
             }
+            // Target session not connected — drop the message.
+            // Same behavior as feishu/discord when chat_id is offline.
         }
     }
 }
